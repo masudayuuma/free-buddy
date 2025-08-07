@@ -4,9 +4,50 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 declare global {
   interface Window {
-    SpeechRecognition: any;
-    webkitSpeechRecognition: any;
+    SpeechRecognition: new () => ISpeechRecognition;
+    webkitSpeechRecognition: new () => ISpeechRecognition;
   }
+}
+
+interface ISpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  maxAlternatives: number;
+  start(): void;
+  stop(): void;
+  onstart: ((this: ISpeechRecognition, ev: Event) => any) | null;
+  onend: ((this: ISpeechRecognition, ev: Event) => any) | null;
+  onresult: ((this: ISpeechRecognition, ev: SpeechRecognitionEvent) => any) | null;
+  onerror: ((this: ISpeechRecognition, ev: SpeechRecognitionErrorEvent) => any) | null;
+}
+
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+
+interface SpeechRecognitionResultList {
+  length: number;
+  item(index: number): SpeechRecognitionResult;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionResult {
+  length: number;
+  item(index: number): SpeechRecognitionAlternative;
+  [index: number]: SpeechRecognitionAlternative;
+  isFinal: boolean;
+}
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+  message?: string;
 }
 
 export interface UseSpeechRecognitionReturn {
@@ -26,7 +67,7 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
   const [hasError, setHasError] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<ISpeechRecognition | null>(null);
   const onResultRef = useRef<((finalTranscript: string) => void) | null>(null);
 
   useEffect(() => {
@@ -67,6 +108,10 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
 
           if (finalTranscript && onResultRef.current) {
             onResultRef.current(finalTranscript.trim());
+            // 最終結果が取得されたら自動的に停止
+            if (recognitionRef.current) {
+              recognitionRef.current.stop();
+            }
           }
         };
 

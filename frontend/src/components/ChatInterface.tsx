@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useChat } from '@/hooks/useChat';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
@@ -9,6 +9,8 @@ export default function ChatInterface() {
   const [textInput, setTextInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const speechQueueRef = useRef<string[]>([]);
+  const isProcessingQueueRef = useRef<boolean>(false);
 
   const { messages, isLoading, error, sendMessage, clearMessages } = useChat();
   const { 
@@ -34,19 +36,154 @@ export default function ChatInterface() {
     }
   }, [transcript]);
 
+  // 音声キューを順次処理する関数
+  const processSpeechQueue = async () => {
+    if (isProcessingQueueRef.current) {
+      return;
+    }
+
+    isProcessingQueueRef.current = true;
+    
+    try {
+      // キューが空になるまで処理を継続
+      while (speechQueueRef.current.length > 0) {
+        const textToSpeak = speechQueueRef.current.shift();
+        
+        if (textToSpeak && isSpeechSynthesisSupported && textToSpeak.trim()) {
+          console.log('Starting speech:', textToSpeak.substring(0, 30) + '... (Remaining in queue:', speechQueueRef.current.length + ')');
+          
+          // Promise を使って音声終了を確実に待機
+          await new Promise<void>((resolve) => {
+            let resolved = false;
+            
+            const utterance = new window.SpeechSynthesisUtterance(textToSpeak.trim());
+            
+            // Samantha声の設定（useSpeechSynthesisフックと同じロジック）
+            const voices = window.speechSynthesis.getVoices();
+            console.log('Available voices:', voices.length, voices.map(v => v.name));
+            const siriVoice = voices.find(voice => voice.name === 'Samantha');
+            if (siriVoice) {
+              utterance.voice = siriVoice;
+              console.log('✅ Using Samantha voice for:', textToSpeak.substring(0, 30) + '...');
+            } else {
+              console.log('❌ Samantha voice not found, available voices:', voices.map(v => v.name).slice(0, 5));
+              // フォールバック: 他の高品質な英語音声を探す
+              const fallbackVoice = voices.find(voice => 
+                voice.lang.startsWith('en') && 
+                (voice.name.includes('Premium') || voice.name.includes('Enhanced'))
+              );
+              if (fallbackVoice) {
+                utterance.voice = fallbackVoice;
+                console.log('Using fallback voice:', fallbackVoice.name);
+              }
+            }
+            
+            utterance.lang = 'en-US';
+            utterance.rate = 1.0;  // Samanthaの自然な速度
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+            
+            utterance.onstart = () => {
+              console.log('Speech started');
+            };
+            
+            utterance.onend = () => {
+              if (!resolved) {
+                resolved = true;
+                console.log('Speech ended:', textToSpeak.substring(0, 30) + '...');
+                resolve();
+              }
+            };
+            
+            utterance.onerror = (event) => {
+              if (!resolved) {
+                resolved = true;
+                console.error('Speech error:', event);
+                resolve(); // エラーでも次に進む
+              }
+            };
+            
+            // タイムアウト設定（最大30秒）
+            setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                console.warn('Speech timeout for:', textToSpeak.substring(0, 30) + '...');
+                window.speechSynthesis.cancel();
+                resolve();
+              }
+            }, 30000);
+            
+            // 既存の音声をキャンセルしてから開始
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(utterance);
+          });
+          
+          // 各音声の間に少し間隔を開ける（自然な流れのため）
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      }
+    } finally {
+      isProcessingQueueRef.current = false;
+      console.log('Speech queue processing completed');
+    }
+  };
+
+  // 音声キューに追加する関数
+  const addToSpeechQueue = (text: string) => {
+    if (text.trim()) {
+      speechQueueRef.current.push(text.trim());
+      console.log('Added to speech queue:', text.substring(0, 30) + '... (Queue length:', speechQueueRef.current.length + ')');
+      
+      // 現在処理中でない場合のみ処理を開始
+      if (!isProcessingQueueRef.current) {
+        console.log('Starting queue processing...');
+        processSpeechQueue();
+      } else {
+        console.log('Queue processing already in progress, item added to queue');
+      }
+    }
+  };
+
   const handleSendMessage = async (message: string) => {
     if (!message.trim()) return;
 
+    // メッセージを送信する前に録音を確実に停止
+    if (isListening) {
+      stopListening();
+      setIsRecording(false);
+    }
+
     setTextInput('');
     
-    let fullResponse = '';
+    // 現在の音声再生を停止（新しい応答が始まるため）
+    if (isSpeaking) {
+      stopSpeaking();
+    }
+    
+    // 音声キューをクリア
+    speechQueueRef.current = [];
+    isProcessingQueueRef.current = false;
+
+    let sentenceBuffer = '';
+    
     await sendMessage(message, (token) => {
-      fullResponse += token;
+      sentenceBuffer += token;
+      
+      // 文の終わりを検出（句読点 + スペース or 改行）または長いフレーズ
+      const sentenceEndPattern = /[.!?]\s+|[.!?]$|\n/;
+      if (sentenceEndPattern.test(sentenceBuffer) || sentenceBuffer.length > 80) {
+        const textToSpeak = sentenceBuffer.trim();
+        if (textToSpeak) {
+          // 音声キューに追加して順次再生
+          addToSpeechQueue(textToSpeak);
+        }
+        sentenceBuffer = ''; // バッファをクリア
+      }
     });
 
-    // アシスタントの応答を音声で再生
-    if (fullResponse.trim() && isSpeechSynthesisSupported) {
-      speak(fullResponse);
+    // 残りのテキストがある場合は最後にキューに追加
+    if (sentenceBuffer.trim()) {
+      addToSpeechQueue(sentenceBuffer.trim());
     }
   };
 
@@ -58,9 +195,13 @@ export default function ChatInterface() {
       setIsRecording(true);
       startListening((finalTranscript) => {
         if (finalTranscript.trim()) {
+          // メッセージ送信前に録音を停止
+          stopListening();
+          setIsRecording(false);
           handleSendMessage(finalTranscript);
+        } else {
+          setIsRecording(false);
         }
-        setIsRecording(false);
       });
     }
   };
@@ -74,6 +215,9 @@ export default function ChatInterface() {
 
   const handleStopSpeaking = () => {
     stopSpeaking();
+    // 音声キューもクリア
+    speechQueueRef.current = [];
+    isProcessingQueueRef.current = false;
   };
 
   return (

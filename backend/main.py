@@ -6,7 +6,7 @@ import aiohttp
 import json
 import logging
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List # Listを追加
 from pydantic import BaseModel
 
 # ログ設定
@@ -27,6 +27,12 @@ app.add_middleware(
 # Ollama設定
 OLLAMA_BASE_URL = os.getenv("OLLAMA_HOST", "host.docker.internal:11434")
 OLLAMA_API_URL = f"http://{OLLAMA_BASE_URL}/api/chat"
+
+# ===== 変更点 1: 会話履歴を保存するためのインメモリ辞書 =====
+# key: ユーザーID, value: メッセージのリスト
+conversation_histories: Dict[str, List[Dict[str, str]]] = {}
+# 記憶する会話のターン数（1ターン = ユーザーの発言 + AIの応答）
+MAX_HISTORY_TURNS = 3
 
 class ChatRequest(BaseModel):
     user: str = "user"
@@ -50,6 +56,9 @@ async def chat(request: ChatRequest):
         logger.info(f"Received chat request from user: {request.user}")
         logger.info(f"Message: {request.message}")
         
+        # ===== 変更点 2: ユーザーごとの会話履歴を取得（なければ新規作成） =====
+        user_history = conversation_histories.setdefault(request.user, [])
+
         # Ollamaへのリクエストペイロード
         ollama_payload = {
             "model": "llama3",
@@ -58,6 +67,8 @@ async def chat(request: ChatRequest):
                     "role": "system", 
                     "content": "You are a friendly English conversation partner. Keep responses conversational, natural, and engaging. Respond in English only."
                 },
+                # ===== 変更点 3: 過去の会話履歴をペイロードに含める =====
+                *user_history,
                 {"role": "user", "content": request.message}
             ],
             "stream": True,
@@ -68,6 +79,8 @@ async def chat(request: ChatRequest):
         }
         
         async def event_generator():
+            # ===== 変更点 4: ストリーミングされたAIの応答全体を保存するための変数 =====
+            full_assistant_response = ""
             try:
                 timeout = aiohttp.ClientTimeout(total=30)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -90,10 +103,12 @@ async def chat(request: ChatRequest):
                                 line = line.strip()
                                 if line:
                                     try:
-                                        # OllamaのJSONレスポンスをパースしてSSE形式で送信
                                         data = json.loads(line)
                                         if 'message' in data and 'content' in data['message']:
                                             content = data['message']['content']
+                                            # AIの応答を追記していく
+                                            full_assistant_response += content
+
                                             sse_data = {
                                                 "role": "assistant",
                                                 "content": content,
@@ -106,6 +121,17 @@ async def chat(request: ChatRequest):
                                     except json.JSONDecodeError as e:
                                         logger.warning(f"Failed to parse Ollama response: {line} - {e}")
                                         continue
+                
+                # ===== 変更点 5: 会話が完了したら履歴を更新・整理 =====
+                # 今回のユーザーの発言を履歴に追加
+                user_history.append({"role": "user", "content": request.message})
+                # 今回のAIの応答（全体）を履歴に追加
+                user_history.append({"role": "assistant", "content": full_assistant_response})
+
+                # 古い履歴を削除して、最大ターン数を維持する
+                conversation_histories[request.user] = user_history[-(MAX_HISTORY_TURNS * 2):]
+
+                logger.info(f"Updated history for user {request.user}. Current history length: {len(conversation_histories[request.user])}")
                                     
             except aiohttp.ClientError as e:
                 logger.error(f"Connection error to Ollama: {e}")
