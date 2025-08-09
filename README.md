@@ -1,4 +1,4 @@
-# VoiceChat-Ollama 🎤🤖
+# VoiceChat-Ollama 🎤🤖 aiii
 
 **FastAPI × Next.js × Ollama ローカル LLM** を使った英会話チャットアプリ（音声 I/O 対応）
 

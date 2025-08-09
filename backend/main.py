@@ -61,7 +61,7 @@ async def chat(request: ChatRequest):
 
         # Ollamaへのリクエストペイロード
         ollama_payload = {
-            "model": "llama3",
+            "model": "llama3.2:1b",
             "messages": [
                 {
                     "role": "system", 
