@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 export interface ChatMessage {
   id: string;
@@ -25,6 +25,15 @@ export const useChat = (): UseChatReturn => {
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // アンマウント時に読み取りを中断
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        try { abortControllerRef.current.abort(); } catch {}
+      }
+    };
+  }, []);
+
   const sendMessage = useCallback(async (
     message: string, 
     onToken?: (token: string) => void
@@ -34,18 +43,16 @@ export const useChat = (): UseChatReturn => {
     setIsLoading(true);
     setError(null);
 
-    // ユーザーメッセージを追加
+    const now = Date.now();
+
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: `${now}`,
       role: 'user',
       content: message,
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
-
-    // アシスタントメッセージの準備
-    const assistantMessageId = (Date.now() + 1).toString();
+    const assistantMessageId = `${now + 1}`;
     const assistantMessage: ChatMessage = {
       id: assistantMessageId,
       role: 'assistant',
@@ -53,24 +60,18 @@ export const useChat = (): UseChatReturn => {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, assistantMessage]);
+    setMessages(prev => [...prev, userMessage, assistantMessage]);
 
     try {
-      // 既存の接続を中止
       if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
+        try { abortControllerRef.current.abort(); } catch {}
       }
       abortControllerRef.current = new AbortController();
 
       const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          user: 'user',
-          message: message,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: 'user', message }),
         signal: abortControllerRef.current.signal,
       });
 
@@ -79,9 +80,7 @@ export const useChat = (): UseChatReturn => {
       }
 
       const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Response body is not readable');
-      }
+      if (!reader) throw new Error('Response body is not readable');
 
       const decoder = new TextDecoder();
       let assistantContent = '';
@@ -89,65 +88,54 @@ export const useChat = (): UseChatReturn => {
       try {
         while (true) {
           const { done, value } = await reader.read();
-          
           if (done) break;
 
           const chunk = decoder.decode(value, { stream: true });
           const lines = chunk.split('\n');
 
           for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const jsonData = JSON.parse(line.slice(6));
-                
-                if (jsonData.error) {
-                  throw new Error(jsonData.error);
-                }
-                
-                if (jsonData.content) {
-                  assistantContent += jsonData.content;
-                  
-                  // リアルタイムでメッセージを更新
-                  setMessages(prev => prev.map(msg => 
-                    msg.id === assistantMessageId 
-                      ? { ...msg, content: assistantContent }
-                      : msg
-                  ));
+            if (!line.startsWith('data: ')) continue;
 
-                  // トークンコールバックを呼び出し
-                  if (onToken) {
-                    onToken(jsonData.content);
-                  }
-                }
-                
-                if (jsonData.done) {
-                  break;
-                }
-              } catch (parseError) {
-                console.warn('Failed to parse SSE data:', line, parseError);
-              }
+            let jsonData: any;
+            try {
+              jsonData = JSON.parse(line.slice(6));
+            } catch {
+              continue;
+            }
+
+            if (jsonData.error) {
+              throw new Error(jsonData.error);
+            }
+
+            if (jsonData.content) {
+              assistantContent += jsonData.content;
+              setMessages(prev =>
+                prev.map(msg =>
+                  msg.id === assistantMessageId ? { ...msg, content: assistantContent } : msg
+                )
+              );
+              if (onToken) onToken(jsonData.content);
+            }
+
+            if (jsonData.done) {
+              break;
             }
           }
         }
       } finally {
-        reader.releaseLock();
+        try { reader.releaseLock(); } catch {}
       }
-
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        console.log('Request was aborted');
+      if (err?.name === 'AbortError') {
         return;
       }
-      
-      console.error('Chat error:', err);
-      setError(err.message || 'メッセージの送信中にエラーが発生しました');
-      
-      // エラーメッセージでアシスタントメッセージを更新
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId 
-          ? { ...msg, content: `エラー: ${err.message}` }
-          : msg
-      ));
+      const msg = err?.message || 'メッセージの送信中にエラーが発生しました';
+      setError(msg);
+      setMessages(prev =>
+        prev.map(m =>
+          m.id === assistantMessageId ? { ...m, content: `エラー: ${msg}` } : m
+        )
+      );
     } finally {
       setIsLoading(false);
       abortControllerRef.current = null;
@@ -157,6 +145,10 @@ export const useChat = (): UseChatReturn => {
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
+    if (abortControllerRef.current) {
+      try { abortControllerRef.current.abort(); } catch {}
+      abortControllerRef.current = null;
+    }
   }, []);
 
   return {
