@@ -37,6 +37,11 @@ class ChatRequest(BaseModel):
     message: str
     theme: Union[int, str] = 1  # 数値ID または タイトル文字列
 
+class ThemeCreateRequest(BaseModel):
+    title: str
+    description: str
+    system_prompt: str
+
 class HealthResponse(BaseModel):
     status: str
 
@@ -68,6 +73,36 @@ async def get_theme(theme_key: str):
         if row is None:
             raise HTTPException(status_code=404, detail="Theme not found")
         return {"id": row.id, "title": row.title, "description": row.description, "system_prompt": row.system_prompt}
+    finally:
+        session.close()
+
+
+@app.post("/api/themes")
+async def create_theme(request: ThemeCreateRequest):
+    """新しい会話テーマを作成する"""
+    session = SessionLocal()
+    try:
+        # タイトルの重複チェック
+        existing = session.query(Theme).filter_by(title=request.title).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Theme with this title already exists")
+        
+        # 新しいテーマを作成
+        new_theme = Theme(
+            title=request.title,
+            description=request.description,
+            system_prompt=request.system_prompt
+        )
+        session.add(new_theme)
+        session.commit()
+        session.refresh(new_theme)
+        
+        return {
+            "id": new_theme.id,
+            "title": new_theme.title,
+            "description": new_theme.description,
+            "system_prompt": new_theme.system_prompt
+        }
     finally:
         session.close()
 

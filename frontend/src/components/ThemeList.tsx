@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import CreateThemeForm from './CreateThemeForm';
 
 export interface ThemeItem {
   id: number;
@@ -18,6 +19,9 @@ export default function ThemeList({ onThemeSelect }: ThemeListProps) {
   const [themes, setThemes] = useState<ThemeItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState<boolean>(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchThemes = async () => {
@@ -38,6 +42,51 @@ export default function ThemeList({ onThemeSelect }: ThemeListProps) {
 
     fetchThemes();
   }, []);
+
+  const handleCreateTheme = async (themeData: { title: string; description: string; system_prompt: string }) => {
+    setIsCreating(true);
+    setCreateError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/themes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(themeData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 409) {
+          throw new Error('同じタイトルのテーマが既に存在します');
+        }
+        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const newTheme: ThemeItem = await response.json();
+      
+      // 新しいテーマをリストに追加
+      setThemes(prev => [...prev, newTheme]);
+      
+      // フォームを閉じる
+      setShowCreateForm(false);
+      
+      // 作成したテーマを自動選択
+      onThemeSelect(newTheme);
+      
+    } catch (err: any) {
+      setCreateError(err.message || 'テーマの作成に失敗しました');
+      console.error('Failed to create theme:', err);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const handleCancelCreate = () => {
+    setShowCreateForm(false);
+    setCreateError(null);
+  };
 
   if (isLoading) {
     return (
@@ -106,6 +155,13 @@ export default function ThemeList({ onThemeSelect }: ThemeListProps) {
       <div className="header">
         <h1>🎨 会話テーマを選択してください</h1>
         <p>AIとどんな会話をしたいですか？テーマを選んでチャットを開始しましょう。</p>
+        <button 
+          className="create-theme-button"
+          onClick={() => setShowCreateForm(true)}
+          aria-label="新しいテーマを作成"
+        >
+          ✨ 新しいテーマを作成
+        </button>
       </div>
 
       <div className="themes-grid">
@@ -123,6 +179,15 @@ export default function ThemeList({ onThemeSelect }: ThemeListProps) {
         ))}
       </div>
 
+      {showCreateForm && (
+        <CreateThemeForm
+          onSubmit={handleCreateTheme}
+          onCancel={handleCancelCreate}
+          isLoading={isCreating}
+          error={createError}
+        />
+      )}
+
       <style jsx>{`
         .theme-list-container {
           min-height: 100vh;
@@ -137,6 +202,27 @@ export default function ThemeList({ onThemeSelect }: ThemeListProps) {
           max-width: 600px;
           margin-left: auto;
           margin-right: auto;
+        }
+
+        .create-theme-button {
+          background: rgba(255, 255, 255, 0.2);
+          color: white;
+          border: 2px solid rgba(255, 255, 255, 0.3);
+          padding: 0.75rem 2rem;
+          border-radius: 2rem;
+          cursor: pointer;
+          font-size: 1rem;
+          font-weight: 500;
+          margin-top: 1.5rem;
+          transition: all 0.3s ease;
+          backdrop-filter: blur(10px);
+        }
+
+        .create-theme-button:hover {
+          background: rgba(255, 255, 255, 0.3);
+          border-color: rgba(255, 255, 255, 0.5);
+          transform: translateY(-2px);
+          box-shadow: 0 10px 25px -5px rgba(255, 255, 255, 0.2);
         }
 
         .header h1 {
@@ -217,6 +303,11 @@ export default function ThemeList({ onThemeSelect }: ThemeListProps) {
           
           .header p {
             font-size: 1rem;
+          }
+          
+          .create-theme-button {
+            padding: 0.6rem 1.5rem;
+            font-size: 0.9rem;
           }
           
           .themes-grid {

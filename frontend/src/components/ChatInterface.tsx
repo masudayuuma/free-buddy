@@ -5,7 +5,11 @@ import { useChat } from '@/hooks/useChat';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 
-export default function ChatInterface() {
+interface ChatInterfaceProps {
+  selectedTheme?: { id: number; title: string; description: string };
+}
+
+export default function ChatInterface({ selectedTheme }: ChatInterfaceProps) {
   const [textInput, setTextInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -179,7 +183,7 @@ export default function ChatInterface() {
         }
         sentenceBuffer = ''; // バッファをクリア
       }
-    });
+    }, selectedTheme?.id);
 
     // 残りのテキストがある場合は最後にキューに追加
     if (sentenceBuffer.trim()) {
